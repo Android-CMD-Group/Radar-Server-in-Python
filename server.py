@@ -1,7 +1,8 @@
 # All of our imports
-
+import time
 import math
 import bottle
+
 # 'route' is for the anotation (@route), request there so we can get the json, run is there so we can run this thing
 from bottle import route, run, request
 
@@ -15,7 +16,7 @@ def trapreport():
     # ---------------------------------- All of this should go into a celery worker function --------------------------------------------------- #
 
     # as long as the person (application) making the post request has the header: "Content-Type: application/json", we can get the json info directly from the request.
-    # This trap variable is a pythin dict object. We can access stuff like this: trap['bearing']. We should definitly do some data validation here.
+    # This trap variable is a python dict object. We can access stuff like this: trap['bearing']. We should definitly do some data validation here.
     trap = request.json
 
     # get a connection to mongod which must be running
@@ -30,13 +31,23 @@ def trapreport():
     # insert our new data
     collection.insert(trap)
 
+    # Log the client/user's location into the :last known location" database so we can notify them in real time if
+    # they are heading towards a trap that is reported in the near future near them
+
+    # Maybe the two next things should be in a celery function?
+
+    # Now we should process the new data and adjust the weights and locations of the aggregated trap database.
+
+    # Then notify all users that might be affected, Figure this out by using the info in "last known location database"
+
     # -------------------------------------------End what should go in a celery worker function-------------------------------------------------------------- #
 
     # return something?
     return str("OK")
 
-# Haversine formula example in Python
+# Haversine formula example in Python, gives distance in km
 # Author: Wayne Dyck
+# Works awesomely
 def distance(origin, destination):
     lat1, lon1 = origin
     lat2, lon2 = destination
@@ -51,6 +62,7 @@ def distance(origin, destination):
     d = radius * c
 
     return d
+
 
 
 def bearingBetweenTwoPoints(end, start):
@@ -89,10 +101,10 @@ def bearingBetweenTwoPoints(end, start):
 # The max number of traps to give to the client
 TRAP_LIMIT = 100
 
-# for converting meters/second to number of meters traveled in hour
 SECONDS_IN_HOUR = 3600
 
-# If the past client reported a trap wile going within this many degrees from the user, that trap will be included
+# tolerance level for how similar the direction the new client must be
+# going in comparison to the client that reported the trap
 VALID_REPORTED_BEARING_RANGE = 120
 
 # the search range in which to consider points to send clients (in degrees)
@@ -115,12 +127,14 @@ def gettraps():
 
 
     # get a handle on our collection
-    collection = db.aggregatedTrapData
+    collection = db.rawTrapData
 
-    # get all the traps
+    # get all the traps that are within an hour (at current speed of
+    # client)
     nearestTraps = collection.find({"loc": {"$near": clientLocation, "$maxDistance": clientSpeed * SECONDS_IN_HOUR}})
 
-    # filter out all the traps which were reported while going in a different direction as the client
+    # filter out all traps for which the new client is traveling in a
+    # different direction than the cleint that reported the trap
     filteredTraps = []
 
     upperBearingBound = (clientBearing + (.5 * VALID_REPORTED_BEARING_RANGE)) % 360
@@ -139,6 +153,17 @@ def gettraps():
         bearingBetweenTraps = bearingBetweenTwoPoints(clientLocation, trap['loc'])
         if bearingBetweenTraps > lowerBearingBound and bearingBetweenTraps < upperBearingBound:
             filteredTraps.remove(trap)
+
+    # log the clients location into "last known location collection" so later
+    # we can push to them if there is a new point found
+
+    collection = db.lastlocation
+    collection.insert({ clientInfo['id']: clientInfo })
+
+
+    # return all the results to the client, auto converts to json (yey
+    # bottle!)
+    return { 'traps': filteredTraps }
 
 
 # run the server.
