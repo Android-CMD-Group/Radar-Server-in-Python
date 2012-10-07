@@ -110,49 +110,78 @@ VALID_REPORTED_BEARING_RANGE = 120
 # the search range in which to consider points to send clients (in degrees)
 VALID_LOCATION_BEARING_RANGE = 120
 
+# get a connection to mongod which must be running
+connection = Connection()
+
+# get a handle on our database
+db = connection.radar
+
 @route('/gettraps', method='POST')
-def gettraps():
-    # need to be validated
-    clientInfo = request.json
+def gettraps_handler():
+    if request:
+        gettraps(request.json)
+
+def gettraps(clientInfo, collection=db.rawTrapData):
 
     clientLocation = clientInfo['loc']
     clientSpeed = clientInfo['speed']
     clientBearing = clientInfo['bearing']
 
-    # get a connection to mongod which must be running
-    connection = Connection()
-
-    # get a handle on our database
-    db = connection.radar
-
-
-    # get a handle on our collection
-    collection = db.rawTrapData
-
     # get all the traps that are within an hour (at current speed of
-    # client)
-    nearestTraps = collection.find({"loc": {"$near": clientLocation, "$maxDistance": clientSpeed * SECONDS_IN_HOUR}})
+    # client) 111045 meters in a lat/long degree
+    nearestTraps = collection.find({"loc": {"$maxDistance": (clientSpeed * SECONDS_IN_HOUR) / 111045.0, "$near": clientLocation}})
 
     # filter out all traps for which the new client is traveling in a
     # different direction than the cleint that reported the trap
-    filteredTraps = []
+    filteredTraps = [trap for trap in nearestTraps]
 
-    upperBearingBound = (clientBearing + (.5 * VALID_REPORTED_BEARING_RANGE)) % 360
-    lowerBearingBound = (clientBearing - (.5 * VALID_REPORTED_BEARING_RANGE)) % 360
 
-    for trap in nearestTraps:
-        if trap['bearing'] > lowerBearingBound and trap['bearing'] < upperBearingBound:
-            filteredTraps.append(trap)
+    ranges = []
+
+    if clientBearing + (.5 * VALID_REPORTED_BEARING_RANGE) > 360:
+        ranges.append(((clientBearing - (.5 * VALID_REPORTED_BEARING_RANGE)), 360))
+        ranges.append((0,  (clientBearing + (.5 * VALID_REPORTED_BEARING_RANGE)) % 360))
+
+    elif (clientBearing - (.5 * VALID_REPORTED_BEARING_RANGE)) < 360:
+        ranges.append((0, (clientBearing + (.5 * VALID_REPORTED_BEARING_RANGE))))
+        ranges.append(((clientBearing - (.5 * VALID_REPORTED_BEARING_RANGE)) % 360, 260))
+
+    else:
+        ranges.append((clientBearing - (.5 * VALID_REPORTED_BEARING_RANGE)), (clientBearing + (.5 * VALID_REPORTED_BEARING_RANGE)))
+
+
+
+    for trap in filteredTraps:
+        if not filter(lambda r: trap['bearing'] > r[0] and trap['bearing'] < r[1], ranges):
+            filteredTraps.remove(trap)
+
+
 
     # filter out all the traps that are not with some degrees of the client's heading
 
-    upperBearingBound = (clientBearing + (.5 * VALID_LOCATION_BEARING_RANGE)) % 360
-    lowerBearingBound = (clientBearing - (.5 * VALID_LOCATION_BEARING_RANGE)) % 360
+    # list of tupples that indicate valid ranges for the bearing.
+    # needed to handle cases where mod puts upper range above 360 or
+    # lower below 360.
+    ranges = []
+
+    if clientBearing + (.5 * VALID_LOCATION_BEARING_RANGE) > 360:
+        ranges.append(((clientBearing - (.5 * VALID_LOCATION_BEARING_RANGE)), 360))
+        ranges.append((0,  (clientBearing + (.5 * VALID_LOCATION_BEARING_RANGE)) % 360))
+
+    elif (clientBearing - (.5 * VALID_LOCATION_BEARING_RANGE)) < 360:
+        ranges.append((0, (clientBearing + (.5 * VALID_LOCATION_BEARING_RANGE))))
+        ranges.append(((clientBearing - (.5 * VALID_LOCATION_BEARING_RANGE)) % 360, 260))
+
+    else:
+        ranges.append((clientBearing - (.5 * VALID_LOCATION_BEARING_RANGE)), (clientBearing + (.5 * VALID_LOCATION_BEARING_RANGE)))
+
 
     for trap in filteredTraps:
         bearingBetweenTraps = bearingBetweenTwoPoints(clientLocation, trap['loc'])
-        if bearingBetweenTraps > lowerBearingBound and bearingBetweenTraps < upperBearingBound:
+        if not filter(lambda r: bearingBetweenTraps > r[0] and bearingBetweenTraps < r[1], ranges):
             filteredTraps.remove(trap)
+
+
 
     # log the clients location into "last known location collection" so later
     # we can push to them if there is a new point found
@@ -163,11 +192,25 @@ def gettraps():
 
     # return all the results to the client, auto converts to json (yey
     # bottle!)
+    [trap.pop('_id') for trap in filteredTraps]
     return { 'traps': filteredTraps }
 
 
+@route('/test', method='POST')
+def test():
+    collection = db.testTraps
+    traps = [trap for trap in collection.find()]
+    [trap.pop('_id') for trap in traps]
+    return {"traps": traps }
+
+
+@route('/', method='GET')
+def hello():
+    return 'hello world'
+
+if __name__ == "__main__":
 # run the server.
-run()
+    run(port=80)
 
 # now to test this out:
 
